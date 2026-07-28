@@ -16,6 +16,15 @@ from backend.app.crag import filter_documents
 from backend.app.reranker import rerank_documents
 from backend.app.generator import generate_final_answer
 
+from fastapi import File, UploadFile
+import shutil
+import os
+from langchain_community.document_loaders import PyPDFLoader
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+
+
 app = FastAPI(title="Self-Healing RAG API")
 
 class ChatRequest(BaseModel):
@@ -105,3 +114,36 @@ def chat_self_healing_endpoint(request: ChatRequest):
 def judge_endpoint(request: JudgeRequest):
     verdict = evaluate_pipelines(request.query, request.normal_res, request.sh_res)
     return {"verdict": verdict}
+
+# Add this endpoint alongside your other routes
+@app.post("/api/ingest")
+async def ingest_document(file: UploadFile = File(...)):
+    try:
+        # 1. Save the uploaded file temporarily to the server
+        temp_file_path = f"temp_{file.filename}"
+        with open(temp_file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # 2. Extract text from the PDF
+        loader = PyPDFLoader(temp_file_path)
+        documents = loader.load()
+        
+        # 3. Slice the document into manageable chunks
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        chunks = text_splitter.split_documents(documents)
+        
+        # 4. Embed and store the chunks in your existing Chroma database
+        # (Make sure VECTOR_DB_DIR and get_embedding_function() are imported/defined)
+        vector_store = Chroma(
+            persist_directory=VECTOR_DB_DIR, 
+            embedding_function=get_embedding_function()
+        )
+        vector_store.add_documents(chunks)
+        
+        # 5. Clean up the temporary file
+        os.remove(temp_file_path)
+        
+        return {"message": f"✅ Successfully ingested {len(chunks)} chunks from {file.filename} into the database!"}
+    
+    except Exception as e:
+        return {"error": str(e)}
