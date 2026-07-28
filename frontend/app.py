@@ -1,91 +1,101 @@
 import streamlit as st
 import requests
+import asyncio
+import aiohttp
+import json
 
-# Page Configuration
-st.set_page_config(
-    page_title="Self-Healing RAG System",
-    page_icon="🛡️",
-    layout="wide"
-)
+st.set_page_config(page_title="Self-Healing RAG System", page_icon="🛡️", layout="wide")
+st.title("🛡️ Advanced Self-Healing RAG Engine")
 
-st.title("🛡️ Self-Healing RAG Engine")
-st.caption("Closed-Loop Retrieval Pipeline powered by LangChain, Groq, ChromaDB, & Cross-Encoder Reranking")
-
-# --- Sidebar for System Status ---
+# --- Sidebar ---
 with st.sidebar:
     st.header("⚙️ Backend Config")
     api_url = st.text_input("FastAPI Endpoint", value="http://127.0.0.1:8000")
+
+# --- Define UI Tabs ---
+tab1, tab2 = st.tabs(["⚖️ A/B Comparison Mode (Live Streaming)", "🛡️ Standard Mode"])
+
+# ==========================================
+# TAB 1: A/B COMPARISON MODE 
+# ==========================================
+with tab1:
+    st.caption("Executes both pipelines asynchronously, showing live telemetry step-by-step.")
+    query_compare = st.text_input("Ask a research question to compare:", key="q_comp")
     
-    st.divider()
-    
-    if st.button("Check API Health"):
-        try:
-            res = requests.get(f"{api_url}/health", timeout=3)
-            if res.status_code == 200:
-                st.success("API Server Online 🟢")
-            else:
-                st.error("API Unreachable 🔴")
-        except Exception as e:
-            st.error(f"Connection Error: {e}")
-
-    st.markdown("### 🛠️ Active Pipeline Layers")
-    st.markdown("""
-    * **1. HyDE:** Generates synthetic research context.
-    * **2. Vector DB:** BAAI BGE-Small embeddings.
-    * **3. CRAG:** Evaluates document relevance.
-    * **4. Cross-Encoder:** Precision reranking.
-    * **5. Groq:** Llama 3 70B synthesis.
-    """)
-
-# --- Main Query Interface ---
-query = st.text_area(
-    "Ask a research question based on your ingested ArXiv papers:",
-    placeholder="e.g., What is the FederatedSGD algorithm?",
-    height=100
-)
-
-if st.button("Run Pipeline", type="primary"):
-    if not query.strip():
-        st.warning("Please enter a valid query before submitting.")
-    else:
-        with st.spinner("Executing Self-Healing Pipeline (HyDE ➔ CRAG ➔ Rerank ➔ Synthesis)..."):
-            try:
-                response = requests.post(
-                    f"{api_url}/api/chat",
-                    json={"query": query},
-                    timeout=60
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    answer = data.get("answer", "")
-                    diagnostics = data.get("diagnostics", {})
+    # Reads the streaming JSON lines and appends them to a visible log
+    async def fetch_and_render_stream(session, url, payload, ui_container, title, color):
+        with ui_container.container():
+            st.subheader(f"{color} {title}")
+            
+            # Create a collapsible expander for the "Thinking" steps
+            with st.expander("💭 Thinking Process", expanded=True):
+                log_container = st.empty()
+                log_text = ""
+            
+            # Placeholder for the final answer below the thinking logs
+            answer_container = st.empty()
+            
+            async with session.post(url, json=payload) as response:
+                async for line in response.content:
+                    if not line:
+                        continue
+                        
+                    data = json.loads(line.decode('utf-8'))
                     
-                    # --- Render Generated Answer ---
-                    st.markdown("### 💡 Generated Answer")
-                    st.success(answer)
-                    
+                    # If the chunk contains a "step", append it to our running log
+                    if "step" in data:
+                        log_text += f"✔️ {data['step']}\n\n"
+                        log_container.markdown(log_text)
+                        
+                    # If the chunk contains the final "answer", render it below
+                    elif "answer" in data:
+                        with answer_container.container():
+                            st.success(data["answer"])
+                            st.caption(f"⏱️ Latency: {data.get('latency', 'N/A')}s")
+                        return data
+
+    async def run_ab_test(query):
+        col1, col2 = st.columns(2)
+        container_naive = col1.container()
+        container_sh = col2.container()
+        placeholder_judge = st.empty()
+        
+        async with aiohttp.ClientSession() as session:
+            payload = {"query": query}
+            
+            # Fire both streams concurrently
+            task_naive = fetch_and_render_stream(session, f"{api_url}/api/chat/naive", payload, container_naive, "Naive RAG", "⚡")
+            task_sh = fetch_and_render_stream(session, f"{api_url}/api/chat/self-healing", payload, container_sh, "Self-Healing RAG", "🛡️")
+            
+            res_naive, res_sh = await asyncio.gather(task_naive, task_sh)
+            
+            # Trigger Judge
+            placeholder_judge.warning("⚖️ Both pipelines complete. Groq Judge is evaluating results...")
+            judge_payload = {"query": query, "normal_res": res_naive, "sh_res": res_sh}
+            
+            async with session.post(f"{api_url}/api/judge", json=judge_payload) as judge_res:
+                judge_data = await judge_res.json()
+                with placeholder_judge.container():
                     st.divider()
-                    
-                    # --- Pipeline Telemetry Metrics ---
-                    st.markdown("### 🔍 Pipeline Telemetry & Diagnostics")
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        st.metric("HyDE Retrieved", diagnostics.get("hyde_retrieved", 0))
-                    with col2:
-                        st.metric("CRAG Passed", diagnostics.get("crag_passed", 0))
-                    with col3:
-                        st.metric("Final Reranked", diagnostics.get("reranked_final", 0))
-                    with col4:
-                        st.metric("CRAG Status", diagnostics.get("crag_status", "N/A"))
-                        
-                    with st.expander("📄 View Raw Diagnostics JSON"):
-                        st.json(diagnostics)
-                        
-                else:
-                    st.error(f"Backend API Error [{response.status_code}]: {response.text}")
-                    
-            except Exception as e:
-                st.error(f"Failed to connect to FastAPI backend: {e}")
+                    st.header("⚖️ LLM Judge Verdict")
+                    st.info(judge_data["verdict"])
+
+    if st.button("Run Dynamic Comparison", key="btn_comp", type="primary"):
+        if query_compare:
+            asyncio.run(run_ab_test(query_compare))
+
+# ==========================================
+# TAB 2: STANDARD MODE 
+# ==========================================
+with tab2:
+    st.caption("Standard Self-Healing Pipeline Execution.")
+    query_standard = st.text_input("Ask a research question:", key="q_std")
+    
+    async def run_single(query):
+        container = st.container()
+        async with aiohttp.ClientSession() as session:
+            await fetch_and_render_stream(session, f"{api_url}/api/chat/self-healing", {"query": query}, container, "Self-Healing RAG", "🛡️")
+
+    if st.button("Run Engine", key="btn_std", type="primary"):
+        if query_standard:
+            asyncio.run(run_single(query_standard))
