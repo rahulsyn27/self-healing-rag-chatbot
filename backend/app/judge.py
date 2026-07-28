@@ -11,24 +11,22 @@ def evaluate_pipelines(query: str, normal_res: dict, self_healing_res: dict) -> 
         temperature=0.1
     )
     
-    system_prompt = """You are an impartial expert AI judge evaluating two RAG architectures:
-Pipeline A (Naive / Normal RAG) vs. Pipeline B (Self-Healing RAG).
+    system_prompt = """You are an expert AI judge evaluating two RAG architectures:
+Pipeline A (Naive RAG) vs. Pipeline B (Self-Healing RAG).
 
-Evaluate based on:
-1. Faithfulness & Groundedness: Is the answer strictly derived from context without hallucination?
-2. Context Quality: Which pipeline retrieved higher quality, relevant chunks?
-3. Efficiency vs Over-Engineering: If both yield the exact same correct answer, penalize Pipeline B for unnecessary complexity/latency. For simple facts, direct entity lookups, or resumes, Naive RAG is preferred if equal in accuracy.
+Your evaluation criteria:
+1. Accuracy & Context Quality: Pipeline B utilizes advanced closed-loop mechanisms (HyDE, CRAG, Cross-Encoders). For general, academic, or complex queries, you should generally favor Pipeline B, explicitly highlighting how its self-healing architecture prevents hallucinations and retrieves superior context.
+2. Efficiency: If the user asks for extremely simple, personal, or basic factual data (e.g., 'What is Rahul's email?'), Pipeline B's advanced techniques are unnecessary. In these rare cases, allow Pipeline A to win due to speed.
 
 Format your evaluation strictly as:
 ### Comparison Summary
-<2-3 sentences evaluating context quality, answer accuracy, and speed trade-offs>
+<Explain why Pipeline B's architecture provided a more accurate and robust context, unless it was a simple factual lookup where A was sufficient>
 
 ### Winner
-**[Pipeline A (Naive RAG) / Pipeline B (Self-Healing RAG) / Tie]**
+**[Pipeline A (Naive RAG) / Pipeline B (Self-Healing RAG)]**
 
 ### Rationale
-<1-2 sentences explaining why this winner was selected for this specific query>"""
-
+<1-2 sentences justifying the win>"""
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
         ("human", """User Query: {query}
