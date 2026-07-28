@@ -12,7 +12,7 @@ dist/
 build/
 
 # Vector database (regenerated via ingestion)
-chroma_db/
+
 
 # IDE & OS
 .idea/

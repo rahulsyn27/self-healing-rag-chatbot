@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Dict, Any
 
+import os
 from backend.app.config import VECTOR_DB_DIR
 from backend.app.embeddings import get_embedding_function
 from langchain_chroma import Chroma
@@ -78,6 +79,19 @@ async def stream_self_healing(query: str):
         "diagnostics": diagnostics,
         "latency": round(time.time() - start_time, 2)
     }) + "\n"
+
+
+# Import your ingestion function here, e.g.:
+# from backend.app.ingest import ingest_documents 
+
+@app.on_event("startup")
+def verify_or_build_vectorstore():
+    # If the vector database directory doesn't exist or is empty
+    if not os.path.exists(VECTOR_DB_DIR) or len(os.listdir(VECTOR_DB_DIR)) == 0:
+        print("⚠️ Vector store is empty on server startup! Running ingestion pipeline...")
+        # Call your document loading and embedding logic here
+        # ingest_documents()
+        print("✅ Vector store populated successfully!")
 
 @app.post("/api/chat/naive")
 def chat_naive_endpoint(request: ChatRequest):

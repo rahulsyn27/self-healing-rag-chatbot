@@ -11,8 +11,8 @@ st.title("🛡️ Advanced Self-Healing RAG Engine")
 with st.sidebar:
     st.header("⚙️ Backend Config")
     # Replace this with your actual Render URL
-    api_url = st.text_input("FastAPI Endpoint", value="https://self-healing-rag-chatbot.onrender.com")
-    # api_url = st.text_input("FastAPI Endpoint", value="http://127.0.0.1:8000")
+    # api_url = st.text_input("FastAPI Endpoint", value="https://self-healing-rag-chatbot.onrender.com")
+    api_url = st.text_input("FastAPI Endpoint", value="http://127.0.0.1:8000")
 
 # --- Define UI Tabs ---
 tab1, tab2 = st.tabs(["⚖️ A/B Comparison Mode (Live Streaming)", "🛡️ Standard Mode"])
