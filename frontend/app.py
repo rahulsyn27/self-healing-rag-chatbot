@@ -12,7 +12,8 @@ st.title("🛡️ Advanced Self-Healing RAG Engine")
 # ==========================================
 with st.sidebar:
     # st.header("⚙️ Backend Config")
-    # api_url = st.text_input("FastAPI Endpoint", value="http://127.0.0.1:8000")
+    # api_url = st.text_input("FastAPI Endpoint", value="http://127.0.0.1:8000") # to run this in local
+    api_url = st.text_input("FastAPI Endpoint", value="https://self-healing-rag-chatbot.onrender.com")
     
     st.divider()
     
