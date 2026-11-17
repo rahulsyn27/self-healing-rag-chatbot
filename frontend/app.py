@@ -12,8 +12,8 @@ st.title("🛡️ Advanced Self-Healing RAG Engine")
 # ==========================================
 with st.sidebar:
     # st.header("⚙️ Backend Config")
-    # api_url = st.text_input("FastAPI Endpoint", value="http://127.0.0.1:8000") # to run this in local
-    api_url = st.text_input("FastAPI Endpoint", value="https://self-healing-rag-chatbot.onrender.com")
+    api_url = st.text_input("FastAPI Endpoint", value="http://127.0.0.1:8000") # to run this in local
+    # api_url = st.text_input("FastAPI Endpoint", value="https://self-healing-rag-chatbot.onrender.com")
     
     st.divider()
     
@@ -66,7 +66,8 @@ if uploaded_file is None:
         """)
 
 # --- Define UI Tabs ---
-tab1, tab2 = st.tabs(["⚖️ A/B Comparison Mode (Live Streaming)", "🛡️ Standard Mode"])
+# --- Updated to A/B/C comparison (added Grounded RAG as Pipeline B) ---
+tab1, tab2 = st.tabs(["⚖️ A/B/C Comparison Mode (Live Streaming)", "🛡️ Standard Mode"])
 
 # ==========================================
 # TAB 1: A/B COMPARISON MODE 
@@ -117,36 +118,80 @@ with tab1:
                     st.error(f"Stream error: {str(e)}")
                 return {"answer": "Error", "latency": 0}
 
-    async def run_ab_test(query):
-        col1, col2 = st.columns(2)
+    # --- run_ab_test commented out; replaced by run_abc_test below ---
+    # async def run_ab_test(query):
+    #     col1, col2 = st.columns(2)
+    #     container_naive = col1.container()
+    #     container_sh = col2.container()
+    #     placeholder_judge = st.empty()
+    #     async with aiohttp.ClientSession() as session:
+    #         payload = {"query": query}
+    #         task_naive = fetch_and_render_stream(session, f"{api_url}/api/chat/naive", payload, container_naive, "Naive RAG", "⚡")
+    #         task_sh = fetch_and_render_stream(session, f"{api_url}/api/chat/self-healing", payload, container_sh, "Self-Healing RAG", "🛡️")
+    #         res_naive, res_sh = await asyncio.gather(task_naive, task_sh)
+    #         placeholder_judge.warning("⚖️ Both pipelines complete. Groq Judge is evaluating results...")
+    #         judge_payload = {"query": query, "normal_res": res_naive, "sh_res": res_sh}
+    #         try:
+    #             async with session.post(f"{api_url}/api/judge", json=judge_payload) as judge_res:
+    #                 judge_data = await judge_res.json()
+    #                 with placeholder_judge.container():
+    #                     st.divider()
+    #                     st.header("⚖️ LLM Judge Verdict")
+    #                     st.info(judge_data["verdict"])
+    #         except Exception:
+    #             placeholder_judge.error("Judge evaluation failed to connect.")
+
+    # --- A/B/C Comparison: Naive vs Grounded vs Self-Healing ---
+    async def run_abc_test(query):
+        col1, col2, col3 = st.columns(3)
         container_naive = col1.container()
-        container_sh = col2.container()
+        container_grounded = col2.container()
+        container_sh = col3.container()
+        # Grounding score placeholder sits below the Grounded RAG answer in col2
+        grounding_score_slot = col2.container()
         placeholder_judge = st.empty()
-        
+
         async with aiohttp.ClientSession() as session:
             payload = {"query": query}
-            
-            task_naive = fetch_and_render_stream(session, f"{api_url}/api/chat/naive", payload, container_naive, "Naive RAG", "⚡")
-            task_sh = fetch_and_render_stream(session, f"{api_url}/api/chat/self-healing", payload, container_sh, "Self-Healing RAG", "🛡️")
-            
-            res_naive, res_sh = await asyncio.gather(task_naive, task_sh)
-            
-            placeholder_judge.warning("⚖️ Both pipelines complete. Groq Judge is evaluating results...")
-            judge_payload = {"query": query, "normal_res": res_naive, "sh_res": res_sh}
-            
+
+            task_naive    = fetch_and_render_stream(session, f"{api_url}/api/chat/naive",         payload, container_naive,    "Naive RAG",        "⚡")
+            task_grounded = fetch_and_render_stream(session, f"{api_url}/api/chat/grounded",      payload, container_grounded, "Grounded RAG",     "🔍")
+            task_sh       = fetch_and_render_stream(session, f"{api_url}/api/chat/self-healing",  payload, container_sh,       "Self-Healing RAG", "🛡️")
+
+            res_naive, res_grounded, res_sh = await asyncio.gather(task_naive, task_grounded, task_sh)
+
+            # Show grounding score metric under the Grounded RAG column
+            if "grounding_score" in res_grounded:
+                score    = res_grounded.get("grounding_score", 0)
+                verified = res_grounded.get("verified_claims", 0)
+                total    = res_grounded.get("total_claims", 0)
+                with grounding_score_slot:
+                    st.metric(
+                        label="🔎 Grounding Score",
+                        value=f"{int(score * 100)}%",
+                        delta=f"{verified}/{total} claims source-verified"
+                    )
+
+            placeholder_judge.warning("⚖️ All 3 pipelines complete. Groq Judge is evaluating...")
+            judge_payload = {
+                "query": query,
+                "normal_res": res_naive,
+                "grounded_res": res_grounded,
+                "sh_res": res_sh
+            }
             try:
-                async with session.post(f"{api_url}/api/judge", json=judge_payload) as judge_res:
+                async with session.post(f"{api_url}/api/judge3", json=judge_payload) as judge_res:
                     judge_data = await judge_res.json()
                     with placeholder_judge.container():
                         st.divider()
-                        st.header("⚖️ LLM Judge Verdict")
+                        st.header("⚖️ LLM Judge Verdict (3-Way)")
                         st.info(judge_data["verdict"])
-            except Exception:
-                placeholder_judge.error("Judge evaluation failed to connect.")
+            except Exception as e:
+                placeholder_judge.error(f"Judge evaluation failed: {str(e)}")
 
     if st.button("Run Dynamic Comparison", key="btn_comp", type="primary"):
         if query_compare:
-            asyncio.run(run_ab_test(query_compare))
+            asyncio.run(run_abc_test(query_compare))
 
 # ==========================================
 # TAB 2: STANDARD MODE 

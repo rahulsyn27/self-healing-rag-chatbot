@@ -57,3 +57,77 @@ Provide your evaluation.""")
         "sh_rerank_count": self_healing_res["diagnostics"].get("reranked_final", 0),
         "sh_answer": self_healing_res["answer"]
     })
+
+# --- Grounded RAG: 3-way evaluation ---
+# evaluate_pipelines above is kept as-is for backward compatibility with /api/judge
+# This new function handles the 3-way A/B/C comparison
+def evaluate_three_pipelines(query: str, normal_res: dict, grounded_res: dict, self_healing_res: dict) -> str:
+    """Impartial LLM judge comparing Naive RAG vs Grounded RAG vs Self-Healing RAG."""
+    llm = ChatGroq(api_key=GROQ_API_KEY, model_name="llama-3.3-70b-versatile", temperature=0.1)
+
+    system_prompt = """You are an expert, impartial AI judge evaluating three RAG architectures on the same query:
+
+Pipeline A (Naive RAG):        Direct similarity search -> generate. No quality control.
+Pipeline B (Grounded RAG):     Similarity search -> generate WITH inline citations -> verify each cited claim.
+Pipeline C (Self-Healing RAG): HyDE -> CRAG relevance filter -> Cross-Encoder rerank -> generate.
+
+Evaluate each pipeline on:
+1. Answer Accuracy & Depth
+2. Grounding / Hallucination Risk (use Pipeline B's grounding_score as a signal)
+3. Retrieval Quality (use Pipeline C's CRAG/rerank diagnostics as signals)
+4. Speed vs Quality Tradeoff
+
+Be objective. Do not systematically favour any pipeline — a higher grounding_score is positive for B,
+but a well-filtered reranked answer from C may still outperform if the question needs deep reasoning.
+
+Format your evaluation strictly as:
+### Pipeline Comparison
+
+**Pipeline A (Naive RAG):** <1-2 sentences>
+**Pipeline B (Grounded RAG):** <1-2 sentences, mention grounding score>
+**Pipeline C (Self-Healing RAG):** <1-2 sentences, mention CRAG/rerank diagnostics>
+
+### Winner
+**[Pipeline A / Pipeline B / Pipeline C]**
+
+### Rationale
+<2-3 sentences justifying the winner with specific evidence from the results>"""
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", """User Query: {query}
+
+--- PIPELINE A (Naive RAG) ---
+Latency: {a_latency}s | Retrieved Chunks: {a_doc_count}
+Answer: {a_answer}
+
+--- PIPELINE B (Grounded RAG) ---
+Latency: {b_latency}s | Retrieved Chunks: {b_doc_count}
+Grounding Score: {b_score} ({b_verified}/{b_total} claims verified)
+Answer: {b_answer}
+
+--- PIPELINE C (Self-Healing RAG) ---
+Latency: {c_latency}s | HyDE: {c_hyde} docs -> CRAG passed: {c_crag} -> Final reranked: {c_rerank}
+Answer: {c_answer}
+
+Provide your evaluation.""")
+    ])
+
+    chain = prompt | llm | StrOutputParser()
+    return chain.invoke({
+        "query": query,
+        "a_latency": normal_res.get("latency", "N/A"),
+        "a_doc_count": normal_res.get("retrieved_count", "N/A"),
+        "a_answer": normal_res.get("answer", ""),
+        "b_latency": grounded_res.get("latency", "N/A"),
+        "b_doc_count": grounded_res.get("retrieved_count", "N/A"),
+        "b_score": grounded_res.get("grounding_score", 0),
+        "b_verified": grounded_res.get("verified_claims", 0),
+        "b_total": grounded_res.get("total_claims", 0),
+        "b_answer": grounded_res.get("answer", ""),
+        "c_latency": self_healing_res.get("latency", "N/A"),
+        "c_hyde": self_healing_res.get("diagnostics", {}).get("hyde_retrieved", 0),
+        "c_crag": self_healing_res.get("diagnostics", {}).get("crag_passed", 0),
+        "c_rerank": self_healing_res.get("diagnostics", {}).get("reranked_final", 0),
+        "c_answer": self_healing_res.get("answer", "")
+    })

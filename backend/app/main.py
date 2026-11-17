@@ -15,6 +15,8 @@ from backend.app.hyde import retrieve_with_hyde
 from backend.app.crag import filter_documents
 from backend.app.reranker import rerank_documents
 from backend.app.generator import generate_final_answer
+# --- Grounded RAG imports ---
+from backend.app.grounded_rag import generate_cited_answer, verify_grounding
 
 from fastapi import File, UploadFile
 import shutil
@@ -34,6 +36,13 @@ class JudgeRequest(BaseModel):
     query: str
     normal_res: Dict[str, Any]
     sh_res: Dict[str, Any]
+
+# --- Grounded RAG: Request model for 3-way judge ---
+# class JudgeThreeRequest(BaseModel):
+#     query: str
+#     normal_res: Dict[str, Any]
+#     grounded_res: Dict[str, Any]
+#     sh_res: Dict[str, Any]
 
 async def stream_naive_rag(query: str):
     """Yields live status updates while running Naive RAG."""
@@ -70,9 +79,13 @@ async def stream_self_healing(query: str):
     yield json.dumps({"step": f"Running CRAG relevance grading on {len(raw_docs)} docs..."}) + "\n"
     await asyncio.sleep(0.1)
     crag_results = filter_documents(query, raw_docs)
-    surviving_docs = crag_results["documents"]
+    if crag_results["status"] == "failed":
+        surviving_docs = []
+        active_query = query
+    else:
+        surviving_docs = crag_results["documents"]
+        active_query = crag_results["new_query"]
     diagnostics["crag_passed"] = len(surviving_docs)
-    active_query = crag_results["new_query"]
 
     yield json.dumps({"step": f"Cross-Encoder reranking {len(surviving_docs)} docs..."}) + "\n"
     await asyncio.sleep(0.1)
@@ -90,6 +103,35 @@ async def stream_self_healing(query: str):
     }) + "\n"
 
 
+# --- Grounded RAG: Streaming pipeline (Retrieve -> Cite -> Verify) ---
+# async def stream_grounded_rag(query: str):
+#     """Yields live status updates while running the Grounded RAG pipeline."""
+#     start_time = time.time()
+
+#     yield json.dumps({"step": "Retrieving documents via similarity search..."}) + "\n"
+#     await asyncio.sleep(0.1)
+#     vector_store = Chroma(persist_directory=VECTOR_DB_DIR, embedding_function=get_embedding_function())
+#     docs = vector_store.similarity_search(query, k=3)
+
+#     yield json.dumps({"step": f"Generating cited answer from {len(docs)} documents..."}) + "\n"
+#     await asyncio.sleep(0.1)
+#     cited_answer = generate_cited_answer(query, docs)
+
+#     yield json.dumps({"step": f"Verifying grounding of all cited claims..."}) + "\n"
+#     await asyncio.sleep(0.1)
+#     grounding = verify_grounding(cited_answer, docs)
+
+#     yield json.dumps({
+#         "answer": cited_answer,
+#         "latency": round(time.time() - start_time, 2),
+#         "retrieved_count": len(docs),
+#         "docs": [doc.page_content for doc in docs],
+#         "grounding_score": grounding["grounding_score"],
+#         "verified_claims": grounding["verified"],
+#         "total_claims": grounding["total"]
+#     }) + "\n"
+
+
 # Import your ingestion function here, e.g.:
 # from backend.app.ingest import ingest_documents 
 
@@ -105,6 +147,7 @@ def verify_or_build_vectorstore():
 @app.post("/api/chat/naive")
 def chat_naive_endpoint(request: ChatRequest):
     return StreamingResponse(stream_naive_rag(request.query), media_type="application/x-ndjson")
+# application/x-ndjson: Newline Delimited JSON. Instead of one giant JSON object, you send multiple JSON objects separated by newlines.
 
 @app.post("/api/chat/self-healing")
 def chat_self_healing_endpoint(request: ChatRequest):
@@ -114,6 +157,18 @@ def chat_self_healing_endpoint(request: ChatRequest):
 def judge_endpoint(request: JudgeRequest):
     verdict = evaluate_pipelines(request.query, request.normal_res, request.sh_res)
     return {"verdict": verdict}
+
+# --- Grounded RAG: Streaming endpoint ---
+# @app.post("/api/chat/grounded")
+# def chat_grounded_endpoint(request: ChatRequest):
+#     return StreamingResponse(stream_grounded_rag(request.query), media_type="application/x-ndjson")
+
+# # --- Grounded RAG: 3-way judge endpoint ---
+# @app.post("/api/judge3")
+# def judge_three_endpoint(request: JudgeThreeRequest):
+#     from backend.app.judge import evaluate_three_pipelines
+#     verdict = evaluate_three_pipelines(request.query, request.normal_res, request.grounded_res, request.sh_res)
+#     return {"verdict": verdict}
 
 # Add this endpoint alongside your other routes
 @app.post("/api/ingest")

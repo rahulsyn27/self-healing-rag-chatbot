@@ -48,6 +48,116 @@ flowchart TB
     class D decision;
     class G output;
 ```
+
+### Full System Diagram
+
+```mermaid
+graph TD
+    subgraph Frontend[Streamlit Frontend]
+        UI[User Query Input]
+        TAB1[A/B/C Comparison Mode]
+        TAB2[Standard Mode]
+        UPLOAD[PDF Upload & Ingestion]
+        JUDGE[LLM Judge Verdict]
+    end
+
+    subgraph Backend[FastAPI Backend]
+        API1[POST /api/chat/naive]
+        API2[POST /api/chat/self-healing]
+        API3[POST /api/chat/grounded]
+        API4[POST /api/judge]
+        API5[POST /api/judge3]
+        API6[POST /api/ingest]
+    end
+
+    subgraph NaiveRAG[Naive RAG Pipeline]
+        NVS[Vector Search<br/>similarity_search k=3]
+        NGEN[Generator<br/>Llama 3.3 70B]
+    end
+
+    subgraph SelfHealing[Self-Healing RAG Pipeline]
+        HYDE[HyDE Generator<br/>Llama 3.3 70B]
+        HVS[HyDE Vector Search<br/>similarity_search k=10]
+        CRAG[CRAG Grader<br/>Llama 3.3 70B]
+        CRAG_RW[Query Rewriter<br/>Llama 3.3 70B]
+        CRAG_HYDE[HyDE Retry<br/>Recursive]
+        RERANK[Cross-Encoder Reranker<br/>MS-MARCO MiniLM]
+        SGEN[Generator<br/>Llama 3.3 70B]
+    end
+
+    subgraph GroundedRAG[Grounded RAG Pipeline]
+        GVS[Vector Search<br/>similarity_search k=3]
+        GCITE[Cited Generator<br/>Llama 3.3 70B]
+        GVERIFY[Grounding Verifier<br/>Llama 3.3 70B]
+    end
+
+    subgraph DataLayer[Data Layer]
+        CHROMA[(ChromaDB<br/>BAAI/bge-small-en-v1.5)]
+        PDFS[PDF Documents<br/>data/papers/]
+    end
+
+    %% Frontend connections
+    UI --> TAB1
+    UI --> TAB2
+    UI --> UPLOAD
+    TAB1 --> API1
+    TAB1 --> API2
+    TAB1 --> API3
+    TAB1 --> API5
+    TAB2 --> API2
+    UPLOAD --> API6
+
+    %% Backend to pipelines
+    API1 --> NVS
+    API2 --> HYDE
+    API3 --> GVS
+
+    %% Naive RAG flow
+    NVS --> CHROMA
+    NVS --> NGEN
+    NGEN --> API1
+
+    %% Self-Healing flow
+    HYDE --> HVS
+    HVS --> CHROMA
+    HVS --> CRAG
+    CRAG -->|Relevant| RERANK
+    CRAG -->|All Failed| CRAG_RW
+    CRAG_RW --> CRAG_HYDE
+    CRAG_HYDE --> HYDE
+    RERANK --> SGEN
+    SGEN --> API2
+
+    %% Grounded RAG flow
+    GVS --> CHROMA
+    GVS --> GCITE
+    GCITE --> GVERIFY
+    GVERIFY --> API3
+
+    %% Data ingestion
+    API6 --> PDFS
+    PDFS --> CHROMA
+
+    %% Judge
+    API4 --> JUDGE
+    API5 --> JUDGE
+
+    %% Styling
+    classDef frontend fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef backend fill:#f3e5f5,stroke:#4a148c,stroke-width:2px;
+    classDef naive fill:#fff3e0,stroke:#e65100,stroke-width:2px;
+    classDef healing fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px;
+    classDef grounded fill:#fce4ec,stroke:#880e4f,stroke-width:2px;
+    classDef data fill:#fafafa,stroke:#616161,stroke-width:2px;
+
+    class UI,TAB1,TAB2,UPLOAD,JUDGE frontend;
+    class API1,API2,API3,API4,API5,API6 backend;
+    class NVS,NGEN naive;
+    class HYDE,HVS,CRAG,CRAG_RW,CRAG_HYDE,RERANK,SGEN healing;
+    class GVS,GCITE,GVERIFY grounded;
+    class CHROMA,PDFS data;
+```
+
 ---
 
 ## Pipeline Architecture Details
@@ -114,15 +224,60 @@ Query
 
 ---
 
-### 3. LLM Judge (Evaluation)
+### 3. Grounded RAG (Citation + Verification)
+**Purpose:** Generate answers with inline citations and verify each claim.
+
+```
+Query → Vector Search (k=3) → Cited Generator → Grounding Verifier → Answer + Score
+```
+
+**Cited Generator:** Produces answer with `[Doc N]` citations for each claim
+**Grounding Verifier:** Checks each cited claim against source documents
+- Returns `grounding_score` (0-1), `verified_claims`, `total_claims`
+
+---
+
+### 4. LLM Judge (Evaluation)
 **Purpose:** Impartial comparison of pipeline outputs.
 
 **2-Way Judge (Naive vs Self-Healing):**
 - Favors Self-Healing for complex/academic queries
 - Favors Naive for simple factual lookups (speed)
 
+**3-Way Judge (Naive vs Grounded vs Self-Healing):**
+- Evaluates: Accuracy, Grounding, Retrieval Quality, Speed/Quality Tradeoff
+- Uses CRAG/rerank diagnostics and grounding score as signals
+- No systematic bias toward any pipeline
+
 ---
 
+## Component Specifications
+
+| Component | Technology | Model | Key Parameters |
+|-----------|------------|-------|----------------|
+| Embeddings | HuggingFace / LangChain | BAAI/bge-small-en-v1.5 | normalize_embeddings=True, device=cpu |
+| Vector DB | ChromaDB | Persistent local | cosine similarity |
+| LLM (All) | Groq API | llama-3.3-70b-versatile | varies by component |
+| HyDE Generator | LangChain + Groq | llama-3.3-70b-versatile | temperature=0.3 |
+| CRAG Grader | LangChain + Groq | llama-3.3-70b-versatile | temperature=0, structured yes/no |
+| Query Rewriter | LangChain + Groq | llama-3.3-70b-versatile | temperature=0.1 |
+| Reranker | sentence-transformers | cross-encoder/ms-marco-MiniLM-L-6-v2 | max_length=512 |
+| Final Generator | LangChain + Groq | llama-3.3-70b-versatile | temperature=0.2 |
+| Judge | LangChain + Groq | llama-3.3-70b-versatile | temperature=0.1 |
+| Frontend | Streamlit | - | async aiohttp streaming |
+
+---
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/chat/naive` | POST | Naive RAG streaming (NDJSON) |
+| `/api/chat/self-healing` | POST | Self-Healing RAG streaming (NDJSON) |
+| `/api/chat/grounded` | POST | Grounded RAG streaming (NDJSON) |
+| `/api/judge` | POST | 2-way pipeline comparison |
+| `/api/judge3` | POST | 3-way pipeline comparison |
+| `/api/ingest` | POST | Upload & ingest PDF into ChromaDB |
 
 ### Request/Response Formats
 
@@ -174,6 +329,7 @@ Self-Healing RAG chatbot/
 │       ├── crag.py             # CRAG grading, query rewriting, recursive retry
 │       ├── reranker.py         # Cross-Encoder MS-MARCO reranking
 │       ├── generator.py        # Final answer synthesis with citations
+│       ├── grounded_rag.py     # Cited generation + grounding verification
 │       ├── judge.py            # LLM-as-judge evaluation (2-way & 3-way)
 │       └── main.py             # FastAPI endpoints, streaming orchestration
 ├── frontend/
@@ -233,12 +389,14 @@ streamlit run app.py
 
 | Feature | Description |
 |---------|-------------|
-| **HyDE** | Expands short queries into hypothetical documents for better semantic matching |
+| **HyDE** | Expands short queries into hypothetical academic documents for better semantic matching |
 | **CRAG** | Binary relevance grading with automatic query rewriting on total failure (max 2 retries) |
 | **Cross-Encoder Reranking** | Precision scoring of query-doc pairs using MS-MARCO MiniLM |
+| **Grounded RAG** | Inline citations + claim-level grounding verification |
 | **LLM Judge** | Impartial multi-pipeline evaluation with structured rationale |
 | **Streaming UI** | Live step-by-step telemetry for all pipelines simultaneously |
 | **PDF Upload** | Dynamic ingestion of custom documents at runtime |
+| **Deployment Ready** | Render.com config included |
 
 ---
 
@@ -249,6 +407,29 @@ streamlit run app.py
 | `GROQ_API_KEY` | Yes | - | Groq API key for Llama 3.3 70B |
 | `VECTOR_DB_DIR` | No | `./chroma_db` | ChromaDB persistence directory |
 | `EMBEDDING_MODEL_NAME` | No | `BAAI/bge-small-en-v1.5` | HuggingFace embedding model |
+
+---
+
+## Test Queries
+
+| Category | Query | Tests |
+|----------|-------|-------|
+| **Vocabulary Mismatch** | "Why is it better to aggregate weights on a central server rather than just uploading all the user's mobile data?" | HyDE expansion |
+| **Deep Comparison** | "What is the core mathematical difference between Federated SGD and Federated Averaging?" | Cross-Encoder precision |
+| **Out-of-Scope** | "What is my current GPA?" | CRAG filtering (should find nothing) |
+| **Multi-hop** | "How does FedProx's proximal term address the heterogeneity problem in FedAvg?" | Full pipeline reasoning |
+
+---
+
+## Deployment (Render.com)
+
+1. Push to GitHub
+2. Connect repository to Render
+3. Use `render.yaml` for Blueprint deploy
+4. Add `GROQ_API_KEY` as secret in Render dashboard
+5. Services deployed:
+   - **Web Service:** FastAPI backend (port 8000)
+   - **Static Site:** Streamlit frontend (port 8501)
 
 ---
 

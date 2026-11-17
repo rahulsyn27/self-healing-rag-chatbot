@@ -59,7 +59,7 @@ def rewrite_query(question: str) -> str:
     return rewriter_chain.invoke({"question": question})
 
 # --- 4. The CRAG Execution Logic ---
-def filter_documents(question: str, documents: list) -> dict:
+def filter_documents(question: str, documents: list, retry_count: int = 0) -> dict:
     """Grades all documents. If all fail, rewrites the query."""
     grader = get_document_grader()
     
@@ -78,16 +78,32 @@ def filter_documents(question: str, documents: list) -> dict:
         else:
             print(f"Document {i+1}: IRRELEVANT ❌ (Discarded)")
             
-    if not relevant_docs:
-        print("\n--- ALL DOCUMENTS IRRELEVANT. REWRITING QUERY ---")
-        better_query = rewrite_query(question)
-        print(f"Old Query: {question}")
-        print(f"New Query: {better_query}")
-        
-        return {"status": "rewritten", "new_query": better_query, "documents": []}
-        
-    return {"status": "success", "new_query": question, "documents": relevant_docs}
+    if relevant_docs:
+        return {
+            "status": "success",
+            "new_query": question,
+            "documents": relevant_docs
+        }
 
+    if retry_count >= 2:
+        return {
+            "status": "failed",
+            "new_query": question,
+            "documents": []
+        }
+
+    better_query = rewrite_query(question)
+
+    new_documents = retrieve_with_hyde(
+        better_query,
+        k=5
+    )
+
+    return filter_documents(
+        better_query,
+        new_documents,
+        retry_count + 1
+    )
     
 # if __name__ == "__main__":
 #     # Let's test the full flow: HyDE -> CRAG

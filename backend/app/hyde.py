@@ -8,7 +8,6 @@ from backend.app.config import GROQ_API_KEY, VECTOR_DB_DIR
 def generate_hypothetical_document(query: str) -> str:
     """Uses Groq to generate a hypothetical ArXiv paper extract answering the query."""
     
-    # We use Llama 3 70B via Groq for blazing fast generation
     llm = ChatGroq(
         api_key=GROQ_API_KEY,
         model_name="llama-3.3-70b-versatile",
